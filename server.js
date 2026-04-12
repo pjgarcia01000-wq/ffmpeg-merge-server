@@ -41,6 +41,62 @@ function getDuration(filePath) {
   });
 }
 
+// ─── ENDPOINT: Mezclar audios de personajes en secuencia ───────────────────
+app.post('/merge-audios', async (req, res) => {
+  let { audios } = req.body;
+
+  if (typeof audios === 'string') {
+    audios = audios.split('|').filter(Boolean);
+  }
+
+  if (!audios || !Array.isArray(audios) || audios.length === 0) {
+    return res.status(400).json({ error: 'audios array is required' });
+  }
+
+  const tmpDir = `/tmp/audios_${Date.now()}`;
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    console.log(`Downloading ${audios.length} audio files...`);
+    const audioPaths = [];
+    for (let i = 0; i < audios.length; i++) {
+      const p = path.join(tmpDir, `audio_${i}.mp3`);
+      await downloadFile(audios[i], p);
+      audioPaths.push(p);
+      console.log(`Audio ${i + 1} downloaded`);
+    }
+
+    const concatFile = path.join(tmpDir, 'concat.txt');
+    fs.writeFileSync(concatFile, audioPaths.map(p => `file '${p}'`).join('\n'));
+
+    const outputPath = path.join(tmpDir, 'merged_audio.mp3');
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -c:a libmp3lame -q:a 2 "${outputPath}"`;
+
+    console.log('Merging audios...');
+    await new Promise((resolve, reject) => {
+      exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr));
+        resolve();
+      });
+    });
+
+    console.log('Audios merged, sending response...');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', 'attachment; filename=merged_audio.mp3');
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('end', () => {
+      setTimeout(() => exec(`rm -rf ${tmpDir}`), 3000);
+    });
+
+  } catch (err) {
+    console.error('merge-audios error:', err.message);
+    exec(`rm -rf ${tmpDir}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── ENDPOINT: Merge videos + audio (async con job_id) ────────────────────
 async function processJob(jobId, videos, audio, baseUrl) {
   const tmpDir = `/tmp/merge_${jobId}`;
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -63,22 +119,11 @@ async function processJob(jobId, videos, audio, baseUrl) {
 
     jobs[jobId].status = 'processing';
 
-    // Get audio duration to know how many loops we need
     const audioDuration = await getDuration(audioPath);
-    console.log(`[${jobId}] Audio duration: ${audioDuration.toFixed(2)}s`);
-
-    // Get duration of one video clip
     const clipDuration = await getDuration(videoPaths[0]);
-    console.log(`[${jobId}] Clip duration: ${clipDuration.toFixed(2)}s`);
-
-    // Calculate how many times to repeat each clip to cover audio
-    // Total video needed = audioDuration, clips available = videoPaths.length * clipDuration
-    // Repeats needed per clip to fill audio
     const totalClipsDuration = videoPaths.length * clipDuration;
     const repeatsNeeded = Math.ceil(audioDuration / totalClipsDuration) + 1;
-    console.log(`[${jobId}] Repeating each clip ${repeatsNeeded}x to cover ${audioDuration.toFixed(2)}s audio`);
 
-    // Build concat list: cycle through all clips, repeat enough times
     const concatFile = path.join(tmpDir, 'concat.txt');
     const concatLines = [];
     for (let r = 0; r < repeatsNeeded; r++) {
@@ -87,13 +132,11 @@ async function processJob(jobId, videos, audio, baseUrl) {
       }
     }
     fs.writeFileSync(concatFile, concatLines.join('\n'));
-    console.log(`[${jobId}] Concat list: ${concatLines.length} entries`);
 
-    // Concat videos with stream copy (fast, no re-encode) then merge audio
     const outputPath = path.join(tmpDir, 'final.mp4');
     const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${audioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
 
-    console.log(`[${jobId}] Running FFmpeg merge (stream copy)...`);
+    console.log(`[${jobId}] Running FFmpeg merge...`);
     await new Promise((resolve, reject) => {
       exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
         if (err) return reject(new Error(stderr));
@@ -104,7 +147,7 @@ async function processJob(jobId, videos, audio, baseUrl) {
     jobs[jobId].status = 'done';
     jobs[jobId].outputPath = outputPath;
     jobs[jobId].tmpDir = tmpDir;
-    jobs[jobId].downloadUrl = `${baseUrl}/download/${jobId}`;
+    jobs[jobId].downloadUrl = `${'https://' + baseUrl}/download/${jobId}`;
     console.log(`[${jobId}] Done!`);
 
   } catch (err) {
@@ -137,10 +180,10 @@ app.post('/merge', (req, res) => {
   }
 
   const jobId = generateId();
-  const baseUrl = 'https://' + req.get('host');
+  const host = req.get('host');
   jobs[jobId] = { status: 'queued', createdAt: Date.now() };
 
-  processJob(jobId, videos, audio, baseUrl);
+  processJob(jobId, videos, audio, host);
 
   console.log(`[NEW JOB] ${jobId} - ${videos.length} videos`);
   res.json({ job_id: jobId, status: 'queued' });
@@ -176,4 +219,4 @@ app.get('/download/:jobId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`FFmpeg async server (stream copy) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`FFmpeg server running on port ${PORT}`));
