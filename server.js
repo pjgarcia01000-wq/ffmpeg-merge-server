@@ -137,7 +137,7 @@ app.post('/merge', (req, res) => {
   }
 
   const jobId = generateId();
-  const baseUrl = req.protocol + '://' + req.get('host');
+  const baseUrl = 'https://' + req.get('host');
   jobs[jobId] = { status: 'queued', createdAt: Date.now() };
 
   processJob(jobId, videos, audio, baseUrl);
