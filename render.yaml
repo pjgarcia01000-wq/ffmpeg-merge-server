@@ -1,0 +1,5 @@
+services:
+  - type: web
+    name: ffmpeg-merge-server
+    runtime: docker
+    plan: free
