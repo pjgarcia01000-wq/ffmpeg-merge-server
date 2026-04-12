@@ -63,38 +63,39 @@ async function processJob(jobId, videos, audio, baseUrl) {
 
     jobs[jobId].status = 'processing';
 
+    // Get audio duration to know how many loops we need
     const audioDuration = await getDuration(audioPath);
-    const targetPerVideo = audioDuration / videoPaths.length;
-    console.log(`[${jobId}] Audio: ${audioDuration.toFixed(2)}s, target per clip: ${targetPerVideo.toFixed(2)}s`);
+    console.log(`[${jobId}] Audio duration: ${audioDuration.toFixed(2)}s`);
 
-    const stretchedPaths = [];
-    for (let i = 0; i < videoPaths.length; i++) {
-      const vidDuration = await getDuration(videoPaths[i]);
-      const factor = targetPerVideo / vidDuration;
-      console.log(`[${jobId}] Video ${i + 1}: ${vidDuration.toFixed(2)}s -> x${factor.toFixed(2)}`);
-      const stretchedPath = path.join(tmpDir, `stretched_${i}.mp4`);
-      await new Promise((resolve, reject) => {
-        exec(
-          `ffmpeg -y -i "${videoPaths[i]}" -filter:v "setpts=${factor}*PTS" -an "${stretchedPath}"`,
-          { timeout: 120000 },
-          (err, stdout, stderr) => {
-            if (err) return reject(new Error(stderr));
-            resolve();
-          }
-        );
-      });
-      stretchedPaths.push(stretchedPath);
-    }
+    // Get duration of one video clip
+    const clipDuration = await getDuration(videoPaths[0]);
+    console.log(`[${jobId}] Clip duration: ${clipDuration.toFixed(2)}s`);
 
+    // Calculate how many times to repeat each clip to cover audio
+    // Total video needed = audioDuration, clips available = videoPaths.length * clipDuration
+    // Repeats needed per clip to fill audio
+    const totalClipsDuration = videoPaths.length * clipDuration;
+    const repeatsNeeded = Math.ceil(audioDuration / totalClipsDuration) + 1;
+    console.log(`[${jobId}] Repeating each clip ${repeatsNeeded}x to cover ${audioDuration.toFixed(2)}s audio`);
+
+    // Build concat list: cycle through all clips, repeat enough times
     const concatFile = path.join(tmpDir, 'concat.txt');
-    fs.writeFileSync(concatFile, stretchedPaths.map(p => `file '${p}'`).join('\n'));
+    const concatLines = [];
+    for (let r = 0; r < repeatsNeeded; r++) {
+      for (const vp of videoPaths) {
+        concatLines.push(`file '${vp}'`);
+      }
+    }
+    fs.writeFileSync(concatFile, concatLines.join('\n'));
+    console.log(`[${jobId}] Concat list: ${concatLines.length} entries`);
 
+    // Concat videos with stream copy (fast, no re-encode) then merge audio
     const outputPath = path.join(tmpDir, 'final.mp4');
-    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${audioPath}" -c:v libx264 -preset fast -c:a aac -map 0:v:0 -map 1:a:0 "${outputPath}"`;
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${audioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
 
-    console.log(`[${jobId}] Running FFmpeg merge...`);
+    console.log(`[${jobId}] Running FFmpeg merge (stream copy)...`);
     await new Promise((resolve, reject) => {
-      exec(cmd, { timeout: 300000 }, (err, stdout, stderr) => {
+      exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
         if (err) return reject(new Error(stderr));
         resolve();
       });
@@ -175,4 +176,4 @@ app.get('/download/:jobId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`FFmpeg async server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`FFmpeg async server (stream copy) running on port ${PORT}`));
