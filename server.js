@@ -217,6 +217,65 @@ app.get('/download/:jobId', (req, res) => {
     }, 5000);
   });
 });
+// ─── ENDPOINT: /merge-sync ────────────────────────────────────────────────────
+// Solo para QuePasariaSi. Ajusta velocidad del audio al video sin repetir escenas.
+// NO modifica /merge ni /merge-audios — los otros canales no se ven afectados.
+async function processSyncJob(jobId, videos, audio, baseUrl) {
+  const tmpDir = `/tmp/sync_${jobId}`;
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try {
+    jobs[jobId].status = 'downloading';
+    const videoPaths = [];
+    for (let i = 0; i < videos.length; i++) {
+      const p = path.join(tmpDir, `video_${i}.mp4`);
+      await downloadFile(videos[i], p);
+      videoPaths.push(p);
+    }
+    const audioPath = path.join(tmpDir, 'audio.mp3');
+    await downloadFile(audio, audioPath);
+    jobs[jobId].status = 'processing';
+    const videoDurations = await Promise.all(videoPaths.map(getDuration));
+    const totalVideoDuration = videoDurations.reduce((a, b) => a + b, 0);
+    const audioDuration = await getDuration(audioPath);
+    const tempo = audioDuration / totalVideoDuration;
+    console.log(`[${jobId}] Video:${totalVideoDuration.toFixed(2)}s Audio:${audioDuration.toFixed(2)}s Tempo:${tempo.toFixed(4)}`);
+    let atempoFilter;
+    if (tempo < 0.5) { atempoFilter = `atempo=0.5,atempo=${(tempo/0.5).toFixed(4)}`; }
+    else if (tempo > 2.0) { atempoFilter = `atempo=2.0,atempo=${(tempo/2.0).toFixed(4)}`; }
+    else { atempoFilter = `atempo=${tempo.toFixed(4)}`; }
+    const concatFile = path.join(tmpDir, 'concat.txt');
+    fs.writeFileSync(concatFile, videoPaths.map(p => `file '${p}'`).join('\n'));
+    const outputPath = path.join(tmpDir, 'final.mp4');
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${audioPath}" -c:v copy -af "${atempoFilter}" -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
+    await new Promise((resolve, reject) => {
+      exec(cmd, { timeout: 180000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr));
+        resolve();
+      });
+    });
+    jobs[jobId].status = 'done';
+    jobs[jobId].outputPath = outputPath;
+    jobs[jobId].tmpDir = tmpDir;
+    jobs[jobId].downloadUrl = `${'https://' + baseUrl}/download/${jobId}`;
+    console.log(`[${jobId}] SyncJob done!`);
+  } catch (err) {
+    jobs[jobId].status = 'error';
+    jobs[jobId].error = err.message;
+    exec(`rm -rf ${tmpDir}`);
+  }
+}
 
+app.post('/merge-sync', (req, res) => {
+  let { videos, audio } = req.body;
+  if (typeof videos === 'string') { videos = videos.split('|').filter(Boolean); }
+  else if (Array.isArray(videos)) { videos = videos.map(v => typeof v === 'string' ? v : v.downloadUrl || v.url || Object.values(v)[0]); }
+  if (!videos || !Array.isArray(videos) || videos.length === 0) return res.status(400).json({ error: 'videos required' });
+  if (!audio) return res.status(400).json({ error: 'audio required' });
+  const jobId = generateId();
+  jobs[jobId] = { status: 'queued', createdAt: Date.now() };
+  processSyncJob(jobId, videos, audio, req.get('host'));
+  console.log(`[SYNC JOB] ${jobId} - ${videos.length} videos`);
+  res.json({ job_id: jobId, status: 'queued' });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FFmpeg server running on port ${PORT}`));
