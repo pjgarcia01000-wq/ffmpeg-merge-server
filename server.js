@@ -277,5 +277,56 @@ app.post('/merge-sync', (req, res) => {
   console.log(`[SYNC JOB] ${jobId} - ${videos.length} videos`);
   res.json({ job_id: jobId, status: 'queued' });
 });
+
+// ─── ENDPOINT: /concat ────────────────────────────────────────────────────────
+// Une videos que YA tienen audio embebido. Sin audio separado.
+// Usado por el Make MERGE FINAL para unir los 5 segmentos de 30s en 150s.
+async function processConcatJob(jobId, videos, baseUrl) {
+  const tmpDir = `/tmp/concat_${jobId}`;
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try {
+    jobs[jobId].status = 'downloading';
+    const videoPaths = [];
+    for (let i = 0; i < videos.length; i++) {
+      const p = path.join(tmpDir, `segment_${i}.mp4`);
+      await downloadFile(videos[i], p);
+      videoPaths.push(p);
+      console.log(`[${jobId}] Segment ${i + 1} downloaded`);
+    }
+    jobs[jobId].status = 'processing';
+    const concatFile = path.join(tmpDir, 'concat.txt');
+    fs.writeFileSync(concatFile, videoPaths.map(p => `file '${p}'`).join('\n'));
+    const outputPath = path.join(tmpDir, 'final.mp4');
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -c copy "${outputPath}"`;
+    console.log(`[${jobId}] Concatenating ${videos.length} segments...`);
+    await new Promise((resolve, reject) => {
+      exec(cmd, { timeout: 300000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr));
+        resolve();
+      });
+    });
+    jobs[jobId].status = 'done';
+    jobs[jobId].outputPath = outputPath;
+    jobs[jobId].tmpDir = tmpDir;
+    jobs[jobId].downloadUrl = `${'https://' + baseUrl}/download/${jobId}`;
+    console.log(`[${jobId}] Concat done!`);
+  } catch (err) {
+    jobs[jobId].status = 'error';
+    jobs[jobId].error = err.message;
+    exec(`rm -rf ${tmpDir}`);
+  }
+}
+
+app.post('/concat', (req, res) => {
+  let { videos } = req.body;
+  if (typeof videos === 'string') { videos = videos.split('|').filter(Boolean); }
+  else if (Array.isArray(videos)) { videos = videos.map(v => typeof v === 'string' ? v : v.downloadUrl || v.url || Object.values(v)[0]); }
+  if (!videos || !Array.isArray(videos) || videos.length === 0) return res.status(400).json({ error: 'videos required' });
+  const jobId = generateId();
+  jobs[jobId] = { status: 'queued', createdAt: Date.now() };
+  processConcatJob(jobId, videos, req.get('host'));
+  console.log(`[CONCAT JOB] ${jobId} - ${videos.length} segments`);
+  res.json({ job_id: jobId, status: 'queued' });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FFmpeg server running on port ${PORT}`));
