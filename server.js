@@ -41,6 +41,24 @@ function getDuration(filePath) {
   });
 }
 
+
+// ─── Helper: detecta si un archivo es imagen y lo convierte a video con shake ─
+function isImageFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+}
+
+async function imageToVideoWithShake(imagePath, outputPath, duration = 4) {
+  // Efecto shake: sacudida leve de suspenso + slow zoom in
+  const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "zoompan=z='min(zoom+0.001,1.08)':d=${duration*25}:x='iw/2-(iw/zoom/2)+iw*0.008*sin(t*18)':y='ih/2-(ih/zoom/2)+ih*0.008*sin(t*22)',scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -t ${duration} -c:v libx264 -pix_fmt yuv420p -r 25 "${outputPath}"`;
+  await new Promise((resolve, reject) => {
+    exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(stderr || err.message));
+      resolve();
+    });
+  });
+}
+
 // ─── ENDPOINT: Mezclar audios de personajes en secuencia ───────────────────
 app.post('/merge-audios', async (req, res) => {
   let { audios } = req.body;
@@ -108,10 +126,21 @@ async function processJob(jobId, videos, audio, baseUrl, music, musicVolume) {
 
     const videoPaths = [];
     for (let i = 0; i < videos.length; i++) {
-      const p = path.join(tmpDir, `video_${i}.mp4`);
-      await downloadFile(videos[i], p);
-      videoPaths.push(p);
-      console.log(`[${jobId}] Video ${i + 1} downloaded`);
+      const rawExt = videos[i].toLowerCase().includes('.png') ? '.png' :
+                     videos[i].toLowerCase().includes('.jpg') || videos[i].toLowerCase().includes('.jpeg') ? '.jpg' : '.mp4';
+      const rawPath = path.join(tmpDir, `raw_${i}${rawExt}`);
+      await downloadFile(videos[i], rawPath);
+
+      if (isImageFile(rawPath)) {
+        // Convertir imagen a video con efecto shake
+        const videoPath = path.join(tmpDir, `video_${i}.mp4`);
+        console.log(`[${jobId}] Converting image ${i + 1} to video with shake effect...`);
+        await imageToVideoWithShake(rawPath, videoPath, 4);
+        videoPaths.push(videoPath);
+      } else {
+        videoPaths.push(rawPath);
+      }
+      console.log(`[${jobId}] Clip ${i + 1} ready`);
     }
 
     const audioPath = path.join(tmpDir, 'audio.mp3');
