@@ -97,7 +97,8 @@ app.post('/merge-audios', async (req, res) => {
 });
 
 // ─── ENDPOINT: Merge videos + audio (async con job_id) ────────────────────
-async function processJob(jobId, videos, audio, baseUrl) {
+// Soporta parámetro opcional "music" para música de fondo mezclada al volumen indicado
+async function processJob(jobId, videos, audio, baseUrl, music, musicVolume) {
   const tmpDir = `/tmp/merge_${jobId}`;
   fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -117,9 +118,26 @@ async function processJob(jobId, videos, audio, baseUrl) {
     await downloadFile(audio, audioPath);
     console.log(`[${jobId}] Audio downloaded`);
 
+    // ── Música de fondo opcional ──────────────────────────────────────────
+    let finalAudioPath = audioPath;
+    if (music) {
+      const musicPath = path.join(tmpDir, 'music.mp3');
+      await downloadFile(music, musicPath);
+      console.log(`[${jobId}] Music downloaded`);
+      const vol = musicVolume || 0.15;
+      const mixedPath = path.join(tmpDir, 'mixed_audio.mp3');
+      const mixCmd = `ffmpeg -y -i "${audioPath}" -i "${musicPath}" -filter_complex "[1:a]volume=${vol}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[out]" -map "[out]" -c:a aac "${mixedPath}"`;
+      await new Promise((res2, rej2) => {
+        exec(mixCmd, { timeout: 60000 }, (err) => err ? rej2(new Error(err.message)) : res2());
+      });
+      finalAudioPath = mixedPath;
+      console.log(`[${jobId}] Audio mixed with background music (vol: ${vol})`);
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     jobs[jobId].status = 'processing';
 
-    const audioDuration = await getDuration(audioPath);
+    const audioDuration = await getDuration(finalAudioPath);
     const clipDuration = await getDuration(videoPaths[0]);
     const totalClipsDuration = videoPaths.length * clipDuration;
     const repeatsNeeded = Math.ceil(audioDuration / totalClipsDuration) + 1;
@@ -134,7 +152,7 @@ async function processJob(jobId, videos, audio, baseUrl) {
     fs.writeFileSync(concatFile, concatLines.join('\n'));
 
     const outputPath = path.join(tmpDir, 'final.mp4');
-    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${audioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${finalAudioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
 
     console.log(`[${jobId}] Running FFmpeg merge...`);
     await new Promise((resolve, reject) => {
@@ -161,7 +179,7 @@ async function processJob(jobId, videos, audio, baseUrl) {
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.post('/merge', (req, res) => {
-  let { videos, audio } = req.body;
+  let { videos, audio, music, music_volume } = req.body;
 
   if (typeof videos === 'string') {
     videos = videos.split('|').filter(Boolean);
@@ -183,9 +201,9 @@ app.post('/merge', (req, res) => {
   const host = req.get('host');
   jobs[jobId] = { status: 'queued', createdAt: Date.now() };
 
-  processJob(jobId, videos, audio, host);
+  processJob(jobId, videos, audio, host, music, music_volume);
 
-  console.log(`[NEW JOB] ${jobId} - ${videos.length} videos`);
+  console.log(`[NEW JOB] ${jobId} - ${videos.length} videos${music ? ' + music' : ''}`);
   res.json({ job_id: jobId, status: 'queued' });
 });
 
@@ -217,6 +235,7 @@ app.get('/download/:jobId', (req, res) => {
     }, 5000);
   });
 });
+
 // ─── ENDPOINT: /merge-sync ────────────────────────────────────────────────────
 // Solo para QuePasariaSi. Ajusta velocidad del audio al video sin repetir escenas.
 // NO modifica /merge ni /merge-audios — los otros canales no se ven afectados.
@@ -280,7 +299,6 @@ app.post('/merge-sync', (req, res) => {
 
 // ─── ENDPOINT: /concat ────────────────────────────────────────────────────────
 // Une videos que YA tienen audio embebido. Sin audio separado.
-// Usado por el Make MERGE FINAL para unir los 5 segmentos de 30s en 150s.
 async function processConcatJob(jobId, videos, baseUrl) {
   const tmpDir = `/tmp/concat_${jobId}`;
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -328,5 +346,6 @@ app.post('/concat', (req, res) => {
   console.log(`[CONCAT JOB] ${jobId} - ${videos.length} segments`);
   res.json({ job_id: jobId, status: 'queued' });
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`FFmpeg server running on port ${PORT}`));
