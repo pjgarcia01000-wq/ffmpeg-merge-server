@@ -185,7 +185,7 @@ async function processJob(jobId, videos, audio, baseUrl, music, musicVolume) {
 
     console.log(`[${jobId}] Running FFmpeg merge...`);
     await new Promise((resolve, reject) => {
-      exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
+      exec(cmd, { timeout: 300000 }, (err, stdout, stderr) => {
         if (err) return reject(new Error(stderr));
         resolve();
       });
