@@ -50,7 +50,7 @@ function isImageFile(filePath) {
 
 async function imageToVideoWithShake(imagePath, outputPath, duration = 4) {
   // Efecto shake: sacudida leve de suspenso + slow zoom in
-  const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "zoompan=z='min(zoom+0.001,1.08)':d=${duration*25}:x='iw/2-(iw/zoom/2)+iw*0.008*sin(t*18)':y='ih/2-(ih/zoom/2)+ih*0.008*sin(t*22)',scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -t ${duration} -c:v libx264 -pix_fmt yuv420p -r 25 "${outputPath}"`;
+  const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.001,1.08)':d=${duration*25}:x='iw/2-(iw/zoom/2)+iw*0.008*sin(t*18)':y='ih/2-(ih/zoom/2)+ih*0.008*sin(t*22)',scale=720:1280" -t ${duration} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -r 25 "${outputPath}"`;
   await new Promise((resolve, reject) => {
     exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));
@@ -181,7 +181,7 @@ async function processJob(jobId, videos, audio, baseUrl, music, musicVolume) {
     fs.writeFileSync(concatFile, concatLines.join('\n'));
 
     const outputPath = path.join(tmpDir, 'final.mp4');
-    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${finalAudioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${concatFile}" -i "${finalAudioPath}" -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fps=25" -c:v libx264 -preset fast -crf 23 -c:a aac -map 0:v:0 -map 1:a:0 -shortest "${outputPath}"`;
 
     console.log(`[${jobId}] Running FFmpeg merge...`);
     await new Promise((resolve, reject) => {
