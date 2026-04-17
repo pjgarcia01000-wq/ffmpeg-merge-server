@@ -50,9 +50,9 @@ function isImageFile(filePath) {
 
 async function imageToVideoWithShake(imagePath, outputPath, duration = 4) {
   // Efecto shake: sacudida leve de suspenso + slow zoom in
-  const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='min(zoom+0.001,1.08)':d=${duration*25}:x='iw/2-(iw/zoom/2)+iw*0.008*sin(t*18)':y='ih/2-(ih/zoom/2)+ih*0.008*sin(t*22)',scale=720:1280" -t ${duration} -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -r 25 "${outputPath}"`;
+  const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,scale=720:1280,crop=w=680:h=1200:x='20+20*sin(t*18)':y='40+20*sin(t*22)',scale=720:1280" -t ${duration} -c:v libx264 -preset ultrafast -crf 26 -pix_fmt yuv420p -r 25 "${outputPath}"`;
   await new Promise((resolve, reject) => {
-    exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
+    exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));
       resolve();
     });
@@ -240,9 +240,12 @@ app.get('/status/:jobId', (req, res) => {
   const job = jobs[req.params.jobId];
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  const response = { status: job.status };
+  const response = { status: job.status, jobId: req.params.jobId };
   if (job.status === 'done') response.download_url = job.downloadUrl;
   if (job.status === 'error') response.error = job.error;
+  if (job.status === 'downloading' || job.status === 'processing') {
+    response.message = 'Job still processing, retry later';
+  }
 
   res.json(response);
 });
